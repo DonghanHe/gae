@@ -1,5 +1,7 @@
-from gae.layers import GraphConvolution, GraphConvolutionSparse, InnerProductDecoder
+from layers import GraphConvolution, GraphConvolutionSparse, InnerProductDecoder, NoisyResidualDecoder
 import tensorflow as tf
+
+from gae.layers import ImprovedGCNsp, ImprovedGCN
 
 flags = tf.app.flags
 FLAGS = flags.FLAGS
@@ -114,3 +116,85 @@ class GCNModelVAE(Model):
         self.reconstructions = InnerProductDecoder(input_dim=FLAGS.hidden2,
                                       act=lambda x: x,
                                       logging=self.logging)(self.z)
+
+class GCNModelVAE_test(Model):
+    def __init__(self, placeholders, num_features, num_nodes, features_nonzero, **kwargs):
+        super(GCNModelVAE_test, self).__init__(**kwargs)
+
+        self.inputs = placeholders['features']
+        self.input_dim = num_features
+        self.features_nonzero = features_nonzero
+        self.n_samples = num_nodes
+        self.adj = placeholders['adj']
+        self.dropout = placeholders['dropout']
+        self.build()
+
+    def _build(self):
+        self.hidden1 = GraphConvolutionSparse(input_dim=self.input_dim,
+                                              output_dim=FLAGS.hidden1,
+                                              adj=self.adj,
+                                              features_nonzero=self.features_nonzero,
+                                              act=tf.nn.relu,
+                                              dropout=self.dropout,
+                                              logging=self.logging)(self.inputs)
+
+        self.z_mean = GraphConvolution(input_dim=FLAGS.hidden1,
+                                       output_dim=FLAGS.hidden2,
+                                       adj=self.adj,
+                                       act=lambda x: x,
+                                       dropout=self.dropout,
+                                       logging=self.logging)(self.hidden1)
+
+        self.z_log_std = GraphConvolution(input_dim=FLAGS.hidden1,
+                                          output_dim=FLAGS.hidden2,
+                                          adj=self.adj,
+                                          act=lambda x: x,
+                                          dropout=self.dropout,
+                                          logging=self.logging)(self.hidden1)
+
+        self.z = self.z_mean + tf.random_normal([self.n_samples, FLAGS.hidden2]) * tf.exp(self.z_log_std)
+
+        self.reconstructions,self.x_reconstructions,self.w_embed = NoisyResidualDecoder(input_dim = FLAGS.hidden2,
+                                                                           output_dim = self.input_dim,
+                                                                           logging=self.logging)(self.z)
+
+class GCNModelVAEimproved(Model):
+    def __init__(self, placeholders, num_features, num_nodes, features_nonzero, **kwargs):
+        super(GCNModelVAEimproved, self).__init__(**kwargs)
+
+        self.inputs = placeholders['features']
+        self.input_dim = num_features
+        self.features_nonzero = features_nonzero
+        self.n_samples = num_nodes
+        self.adj = placeholders['adj']
+        self.dropout = placeholders['dropout']
+        self.build()
+
+    def _build(self):
+        self.hidden1 = ImprovedGCNsp(input_dim=self.input_dim,
+                                              output_dim=FLAGS.hidden1,
+                                              adj=self.adj,
+                                              features_nonzero=self.features_nonzero,
+                                              act=tf.nn.relu,
+                                              dropout=self.dropout,
+                                              logging=self.logging)(self.inputs)
+
+        self.z_mean = ImprovedGCN(input_dim=FLAGS.hidden1,
+                                       output_dim=FLAGS.hidden2,
+                                       adj=self.adj,
+                                       act=lambda x: x,
+                                       dropout=self.dropout,
+                                       logging=self.logging)(self.hidden1)
+
+        self.z_log_std = ImprovedGCN(input_dim=FLAGS.hidden1,
+                                          output_dim=FLAGS.hidden2,
+                                          adj=self.adj,
+                                          act=lambda x: x,
+                                          dropout=self.dropout,
+                                          logging=self.logging)(self.hidden1)
+
+        self.z = self.z_mean + tf.random_normal([self.n_samples, FLAGS.hidden2]) * tf.exp(self.z_log_std)
+
+        self.reconstructions, self.x_reconstructions, self.w_embed = NoisyResidualDecoder(input_dim=FLAGS.hidden2,
+                                                                                          output_dim=self.input_dim,
+                                                                                          logging=self.logging)(self.z)

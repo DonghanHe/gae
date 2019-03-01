@@ -1,4 +1,4 @@
-from gae.initializations import *
+from initializations import *
 import tensorflow as tf
 
 flags = tf.app.flags
@@ -82,6 +82,28 @@ class GraphConvolution(Layer):
         outputs = self.act(x)
         return outputs
 
+class ImprovedGCN(Layer):
+    """GCN with improved featured preserving structure"""
+    def __init__(self, input_dim, output_dim, adj,  dropout=0., act=tf.nn.relu, **kwargs):
+        super(ImprovedGCN,self).__init__(**kwargs)
+        with tf.variable_scope(self.name+'_vars'):
+            self.vars['weights_orig'] = weight_variable_glorot(input_dim, output_dim, name="weights_orig")
+            self.vars['weights_new'] = weight_variable_glorot(input_dim, output_dim, name="weights_new")
+        self.dropout = dropout
+        self.adj = adj
+        self.act = act
+        self.issparse = True
+
+
+    def _call(self, inputs):
+        x = inputs
+        x = tf.nn.dropout(x,1-self.dropout)
+        x_orig = tf.matmul(x,self.vars['weights_orig'])
+        x_orig = tf.sparse_tensor_dense_matmul(self.adj,x_orig)
+        x_new = tf.matmul(x, self.vars['weights_new'])
+        outputs = self.act(x_orig+x_new)
+        return outputs
+
 
 class GraphConvolutionSparse(Layer):
     """Graph convolution layer for sparse inputs."""
@@ -104,6 +126,29 @@ class GraphConvolutionSparse(Layer):
         return outputs
 
 
+class ImprovedGCNsp(Layer):
+    """GCN with improved featured preserving structure"""
+    def __init__(self, input_dim, output_dim, adj, features_nonzero, dropout=0., act=tf.nn.relu, **kwargs):
+        super(ImprovedGCNsp, self).__init__(**kwargs)
+        with tf.variable_scope(self.name+'_vars'):
+            self.vars['weights_orig'] = weight_variable_glorot(input_dim, output_dim, name="weights_orig")
+            self.vars['weights_new'] = weight_variable_glorot(input_dim, output_dim, name="weights_new")
+        self.dropout = dropout
+        self.adj = adj
+        self.act = act
+        self.issparse = True
+        self.features_nonzero = features_nonzero
+
+    def _call(self, inputs):
+        x = inputs
+        x = dropout_sparse(x,1-self.dropout,self.features_nonzero)
+        x_orig = tf.sparse_tensor_dense_matmul(x,self.vars['weights_orig'])
+        x_orig = tf.sparse_tensor_dense_matmul(self.adj,x_orig)
+        x_new = tf.sparse_tensor_dense_matmul(x, self.vars['weights_new'])
+        outputs = self.act(x_orig+x_new)
+        return outputs
+
+
 class InnerProductDecoder(Layer):
     """Decoder model layer for link prediction."""
     def __init__(self, input_dim, dropout=0., act=tf.nn.sigmoid, **kwargs):
@@ -118,3 +163,35 @@ class InnerProductDecoder(Layer):
         x = tf.reshape(x, [-1])
         outputs = self.act(x)
         return outputs
+
+
+class NoisyResidualDecoder(Layer):
+    def __init__(self, input_dim, output_dim, dropout=0., act=tf.nn.sigmoid, **kwargs):
+        super(NoisyResidualDecoder, self).__init__(**kwargs)
+        with tf.variable_scope(self.name + '_vars'):
+            self.vars['weights_mu'] = weight_variable_glorot(input_dim, output_dim, name='weights_mu')
+            self.vars['weights_sigma'] = weight_variable_glorot(input_dim,output_dim,name='weights_sigma')
+            self.vars['weights_embed'] = weight_variable_glorot(output_dim,32,name='weights_embed')
+            self.vars['beta_zzT'] = tf.get_variable('beta_zzT',shape=[],initializer=tf.initializers.random_uniform(0,0.5))
+            self.vars['beta_wwT'] = tf.get_variable('beta_wwT',shape=[],initializer=tf.initializers.random_uniform(0,1))
+            #self.vars['beta_0'] = tf.get_variable('beta_0',shape=[],initializer=tf.contrib.layers.xavier_initializer())
+        self.dropout = dropout
+        self.act = act
+
+    def _call(self, inputs):
+        inputs = tf.nn.dropout(inputs, 1 - self.dropout)
+        x_mu = tf.matmul(inputs, self.vars['weights_mu'])
+        x_log_sigma = tf.matmul(inputs, self.vars['weights_sigma'])
+        x_sample = tf.distributions.Normal(loc=x_mu,scale=tf.exp(x_log_sigma)).sample()
+        x = x_sample
+        w_embed = (tf.matmul(x, self.vars['weights_embed'])) # because the features are words, we should
+                                                                             # do a layer of word embedding
+        #w_embed = tf.layers.batch_normalization(inputs = w_embed,training=True)
+        wT = tf.transpose(w_embed)
+        wwT = tf.matmul(w_embed,wT)
+        zT = tf.transpose(inputs)
+        zzT = tf.matmul(inputs, zT)
+        #outputs = self.act(tf.reshape(tf.scalar_mul(self.vars['beta_wwT'], wwT), [-1]))
+        outputs = self.act(tf.reshape(tf.scalar_mul(self.vars['beta_zzT'],zzT) + tf.scalar_mul(self.vars['beta_wwT'],wwT),[-1]))
+        return outputs,(x_mu,x_log_sigma),w_embed
+
